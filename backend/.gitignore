@@ -17,6 +17,6 @@ Pipfile.lock
 *.onnx
 *.pt
 *.pth
-
+datasets
 # Ignore node_modules (if Next.js is in the same repo)
 node_modules/
