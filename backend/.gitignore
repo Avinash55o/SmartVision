@@ -4,7 +4,7 @@ venv/
 
 # Ignore compiled files
 __pycache__/
-*.pyc
+
 
 # Ignore environment variables & config
 .env
@@ -14,9 +14,7 @@ Pipfile
 Pipfile.lock
 
 # Ignore large model files (if needed)
-*.onnx
-*.pt
-*.pth
+
 datasets
 # Ignore node_modules (if Next.js is in the same repo)
 node_modules/
