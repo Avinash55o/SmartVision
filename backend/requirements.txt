@@ -1,16 +1,8 @@
-fastapi==0.115.11
-uvicorn==0.34.0
-clip @ git+https://github.com/openai/CLIP.git@dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1
-torch==2.6.0
-torchvision==0.21.0
-onnx==1.17.0
-onnxruntime==1.21.0
-openvino==2024.6.0
-openvino-dev==2024.6.0
-numpy==1.26.4
+fastapi==0.115.4
+uvicorn==0.33.0
 pillow==11.1.0
-tqdm==4.67.1
-pydantic==2.10.6
+torch==2.6.0
+git+https://github.com/openai/CLIP.git@dcba3cb2e2827b402d2701e7e1c7d9fed8a20ef1
+openvino==2024.6.0
+numpy==2.2.4
 transformers==4.40.0
-torchvision==0.21.0
-sentencepiece==0.1.99
