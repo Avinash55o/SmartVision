@@ -16,5 +16,6 @@ Pipfile.lock
 # Ignore large model files (if needed)
 
 datasets
+models
 # Ignore node_modules (if Next.js is in the same repo)
 node_modules/
