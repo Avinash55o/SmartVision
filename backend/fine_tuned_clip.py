@@ -6,11 +6,29 @@ import clip
 from transformers import AdamW
 import pandas as pd
 import logging
+import sys
 
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+print("Starting fine_tuned_clip.py script...")
+
+# Set up file logging
+log_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fine_tuned_clip.log")
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(log_file),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 logger = logging.getLogger(__name__)
 
+with open(log_file, "w") as f:
+    f.write("Log file initialized\n")
+
+print(f"Logs will be written to: {log_file}")
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"Using device: {device}")
 if not torch.cuda.is_available():
     logger.warning("CUDA not available, falling back to CPU.")
 
@@ -25,10 +43,21 @@ BONE_CLASSES = ['elbow positive', 'fingers positive', 'forearm fracture', 'humer
                 'humerus', 'shoulder fracture', 'wrist positive']
 
 def load_data():
+    print("Starting to load data...")
     data = []
     
-    img_dir = "/app/datasets/chest_xray/images"
-    csv_path = "/app/datasets/chest_xray/Data_Entry_2017.csv"
+    # Get base directory (current directory or default to Docker paths)
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    print(f"Base directory: {base_dir}")
+    
+    img_dir = os.path.join(base_dir, "datasets", "chest_xray", "images")
+    csv_path = os.path.join(base_dir, "datasets", "chest_xray", "Data_Entry_2017.csv")
+    
+    # Try Docker paths as fallback
+    if not os.path.exists(csv_path):
+        img_dir = "/app/datasets/chest_xray/images"
+        csv_path = "/app/datasets/chest_xray/Data_Entry_2017.csv"
+    
     if not os.path.exists(csv_path):
         logger.error(f"Chest X-ray CSV not found at {csv_path}")
     elif not os.path.exists(img_dir):
@@ -53,7 +82,11 @@ def load_data():
         except Exception as e:
             logger.error(f"Failed to load Chest X-ray CSV: {e}")
 
-    bone_base = "/app/datasets/bone_fracture"
+    # Try local path first, then Docker path
+    bone_base = os.path.join(base_dir, "datasets", "bone_fracture")
+    if not os.path.exists(bone_base):
+        bone_base = "/app/datasets/bone_fracture"
+        
     if not os.path.exists(bone_base):
         logger.error(f"Bone Fracture directory not found at {bone_base}")
         return data
@@ -90,33 +123,76 @@ def load_data():
     logger.info(f"Loaded {len(data)} total image-label pairs")
     return data
 
+print("About to try loading the CLIP model...")
 try:
+    # Try loading the base CLIP model
+    print("Calling clip.load...")
     model, preprocess = clip.load("ViT-B/32", device=device)
     model.train()
+    print("CLIP model loaded successfully!")
 except RuntimeError as e:
     if "checksum does not match" in str(e):
         logger.error(f"Checksum mismatch: {e}. Clearing cache and retrying.")
         import shutil
         shutil.rmtree(os.path.expanduser("~/.cache/clip"), ignore_errors=True)
-        model, preprocess = clip.load("ViT-B/32", device=device)
-        model.train()
+        try:
+            model, preprocess = clip.load("ViT-B/32", device=device)
+            model.train()
+        except Exception as retry_e:
+            logger.error(f"Failed to load CLIP model after cache clear: {retry_e}")
+            exit(1)
     else:
         logger.error(f"Failed to load CLIP model: {e}")
         exit(1)
+except Exception as e:
+    logger.error(f"Unexpected error loading CLIP model: {e}")
+    exit(1)
 
-optimizer = AdamW(model.parameters(), lr=5e-5)
+logger.info(f"Successfully loaded CLIP model on {device}")
 
+# Training hyperparameters
+BATCH_SIZE = 32
+CHUNK_SIZE = 500  # Reduced from 1000 for better memory management
+LEARNING_RATE = 1e-5  # Reduced from 5e-5 for more stable training
+NUM_EPOCHS = 5  # Increased from 2 for better convergence
+WARMUP_STEPS = 1000
+WEIGHT_DECAY = 0.01
+
+# Initialize optimizer with better parameters
+optimizer = AdamW(
+    model.parameters(),
+    lr=LEARNING_RATE,
+    weight_decay=WEIGHT_DECAY,
+    betas=(0.9, 0.999),
+    eps=1e-8
+)
+
+# First load the data
 data = load_data()
 if not data:
     logger.error("No data loaded. Check dataset paths and contents.")
     exit(1)
 
-logger.info("Starting training with chunked data")
-chunk_size = 1000
-for epoch in range(2):  # Changed to 2 epochs
-    for i in range(0, len(data), chunk_size):
-        chunk = data[i:i + chunk_size]
-        logger.info(f"Epoch {epoch}, Processing chunk {i // chunk_size + 1} of {len(data) // chunk_size + 1}")
+# Create learning rate scheduler after data is loaded
+scheduler = torch.optim.lr_scheduler.OneCycleLR(
+    optimizer,
+    max_lr=LEARNING_RATE,
+    epochs=NUM_EPOCHS,
+    steps_per_epoch=len(data) // BATCH_SIZE,
+    pct_start=0.1
+)
+
+logger.info(f"Starting training with {len(data)} samples")
+logger.info(f"Training parameters: batch_size={BATCH_SIZE}, epochs={NUM_EPOCHS}, lr={LEARNING_RATE}")
+
+for epoch in range(NUM_EPOCHS):
+    model.train()
+    total_loss = 0
+    num_batches = 0
+    
+    for i in range(0, len(data), CHUNK_SIZE):
+        chunk = data[i:i + CHUNK_SIZE]
+        logger.info(f"Epoch {epoch + 1}/{NUM_EPOCHS}, Processing chunk {i // CHUNK_SIZE + 1} of {len(data) // CHUNK_SIZE + 1}")
         
         dataset = []
         for img_path, label in chunk:
@@ -128,36 +204,67 @@ for epoch in range(2):  # Changed to 2 epochs
                 logger.warning(f"Skipping {img_path}: {e}")
         
         if not dataset:
-            logger.warning(f"Chunk {i // chunk_size + 1} is empty, skipping")
+            logger.warning(f"Chunk {i // CHUNK_SIZE + 1} is empty, skipping")
             continue
         
-        dataloader = DataLoader(dataset, batch_size=16, shuffle=True, num_workers=2)
+        dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4)
+        
         for batch_idx, (images, texts) in enumerate(dataloader):
             try:
-                logger.debug(f"Before fix - images: {images.shape}, texts: {texts.shape}")
                 images = images.to(device)
                 texts = texts.to(device)
+                
                 if texts.dim() == 3:
                     texts = texts.squeeze(1)
                 elif texts.dim() == 1:
                     texts = texts.unsqueeze(0)
-                logger.debug(f"After fix - images: {images.shape}, texts: {texts.shape}")
+                
                 optimizer.zero_grad()
                 logits_per_image, _ = model(images, texts)
                 labels = torch.arange(len(images)).to(device)
                 loss = torch.nn.functional.cross_entropy(logits_per_image, labels)
+                
                 loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                scheduler.step()
+                
+                total_loss += loss.item()
+                num_batches += 1
+                
                 if batch_idx % 10 == 0:
-                    logger.info(f"Epoch {epoch}, Chunk {i // chunk_size + 1}, Batch {batch_idx}, Loss: {loss.item()}")
+                    avg_loss = total_loss / num_batches
+                    current_lr = scheduler.get_last_lr()[0]
+                    logger.info(f"Epoch {epoch + 1}, Chunk {i // CHUNK_SIZE + 1}, Batch {batch_idx}, "
+                              f"Loss: {avg_loss:.4f}, LR: {current_lr:.2e}")
+                    
             except Exception as e:
-                logger.error(f"Training error in epoch {epoch}, chunk {i // chunk_size + 1}: {e}")
+                logger.error(f"Training error in epoch {epoch + 1}, chunk {i // CHUNK_SIZE + 1}: {e}")
+                continue
+        
+        # Clear memory after each chunk
+        torch.cuda.empty_cache()
         dataset = []
-    logger.info(f"Epoch {epoch} completed")
+    
+    avg_epoch_loss = total_loss / num_batches
+    logger.info(f"Epoch {epoch + 1} completed. Average loss: {avg_epoch_loss:.4f}")
 
-output_path = "/app/fine_tuned_clip.pt"
+# Save the model with additional metadata
+output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fine_tuned_clip.pt")
 try:
-    torch.save(model.state_dict(), output_path)
-    logger.info(f"Model saved to {output_path}")
+    torch.save({
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'epoch': NUM_EPOCHS,
+        'loss': avg_epoch_loss,
+        'hyperparameters': {
+            'batch_size': BATCH_SIZE,
+            'learning_rate': LEARNING_RATE,
+            'num_epochs': NUM_EPOCHS,
+            'chunk_size': CHUNK_SIZE
+        }
+    }, output_path)
+    logger.info(f"Model and training metadata saved to {output_path}")
 except Exception as e:
     logger.error(f"Failed to save model: {e}")
