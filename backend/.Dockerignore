@@ -1,0 +1,28 @@
+# Ignore Python cache and compiled files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore environment and config files
+*.db
+*.sqlite
+*.env
+
+# Ignore Git-related files
+.git/
+.gitattributes
+.gitignore
+
+# Ignore dataset and model files (if you don’t want to include them in the Docker image)
+dataset/
+models/
+
+# Ignore fine-tuned models and test scripts
+fine_tuned_clip.py
+testmodel.py
+
+# Ignore logs and temp files
+*.log
+*.tmp
+*.swp
